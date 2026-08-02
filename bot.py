@@ -12,7 +12,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 # КОНФИГУРАЦИЯ
 # ============================================
 
-BOT_TOKEN = "7847307838:AAGoxXnPMy8q6AdCg9tV2u6wsuZUoSB7Llo"
+BOT_TOKEN = "7847307838:AAH_zU6OFYsAx03u0evXX2r_IDzMOlJ_gtc"
 DATA_FILE = "clicker_data.json"
 ADMINS = ["8888187728"]
 PORT = int(os.environ.get("PORT", 8080))
