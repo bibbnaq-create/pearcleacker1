@@ -25,7 +25,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def health_check():
-    return "🍐 Pear Clicker Bot is running!", 200
+    return "🍐 Peaar Clicker Bot is running!", 200
 
 @flask_app.route('/health')
 def health():
