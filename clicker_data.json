@@ -1,0 +1,80 @@
+{
+  "users": {
+    "8888187728": {
+      "balance": 150000,
+      "click_power": 15,
+      "level": 10,
+      "xp": 850,
+      "boosts": {
+        "multi_click": 3,
+        "auto_clicker": 2,
+        "click_bonus": 1
+      },
+      "total_clicks": 12500,
+      "streak": 45,
+      "last_streak": "2024-01-15T12:30:00",
+      "last_daily": "2024-01-14T12:30:00",
+      "banned": false,
+      "warns": 0,
+      "nft_inventory": ["1", "2"],
+      "daily_bonus_streak": 7,
+      "credit_limit": 20000,
+      "credit_used": 5000,
+      "credit_pending": 0,
+      "credit_history": [
+        "✅ Взято 5000 монет (15.01.2024 12:30)"
+      ],
+      "total_credit_taken": 5000,
+      "used_promocodes": ["PEAR2024"],
+      "dice_stats": {
+        "wins": 12,
+        "losses": 8,
+        "total_bet": 250000,
+        "total_won": 300000
+      }
+    }
+  },
+  "nft_market": [
+    {
+      "id": "nft_20240115123000_1234",
+      "collection_id": "1",
+      "name": "🔥 Дракон",
+      "emoji": "🐉",
+      "rarity": "Легендарный",
+      "owner_id": "8888187728",
+      "price": null,
+      "for_sale": false,
+      "purchase_date": "2024-01-15T12:30:00"
+    },
+    {
+      "id": "nft_20240115123500_5678",
+      "collection_id": "2",
+      "name": "💎 Кристалл",
+      "emoji": "💎",
+      "rarity": "Редкий",
+      "owner_id": "8888187728",
+      "price": null,
+      "for_sale": false,
+      "purchase_date": "2024-01-15T12:35:00"
+    }
+  ],
+  "promocodes": {
+    "PEAR2024": {
+      "reward": 500,
+      "max_uses": 10,
+      "used": 1,
+      "created": "2024-01-15T12:30:00",
+      "expires": "2024-01-22T12:30:00",
+      "users": ["8888187728"]
+    },
+    "START100": {
+      "reward": 100,
+      "max_uses": 50,
+      "used": 0,
+      "created": "2024-01-15T12:30:00",
+      "expires": "2024-02-15T12:30:00",
+      "users": []
+    }
+  },
+  "admins": ["8888187728"]
+}
