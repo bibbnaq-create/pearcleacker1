@@ -74,7 +74,8 @@ class ClickerData:
                     admins = data.get('admins', [])
                     if admins:
                         ADMINS = admins
-            except:
+            except Exception as e:
+                print(f"Ошибка загрузки данных: {e}")
                 self.users = {}
                 self.nft_market = []
                 self.promocodes = {}
@@ -84,13 +85,16 @@ class ClickerData:
             self.promocodes = {}
 
     def save(self):
-        with open(DATA_FILE, 'w', encoding='utf-8') as f:
-            json.dump({
-                'users': self.users,
-                'nft_market': self.nft_market,
-                'promocodes': self.promocodes,
-                'admins': ADMINS
-            }, f, ensure_ascii=False, indent=2)
+        try:
+            with open(DATA_FILE, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'users': self.users,
+                    'nft_market': self.nft_market,
+                    'promocodes': self.promocodes,
+                    'admins': ADMINS
+                }, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"Ошибка сохранения данных: {e}")
 
     def get_user(self, user_id):
         user_id = str(user_id)
@@ -496,14 +500,8 @@ async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================
 
 async def show_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Магазин с инлайн-кнопками"""
     user_id = update.effective_user.id
     user_data = db.get_user(user_id)
-    
-    if not user_data:
-        await update.message.reply_text("❌ Ошибка!")
-        return
-    
     boosts = user_data.get('boosts', {})
     
     multi_level = boosts.get('multi_click', 0)
@@ -514,24 +512,27 @@ async def show_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     auto_price = 200 * (2 ** auto_level)
     bonus_price = 150 * (2 ** bonus_level)
     
-    # СОЗДАЁМ ИНЛАЙН-КЛАВИАТУРУ
     keyboard = [
-        [InlineKeyboardButton(
-            f"🔹 Мультиклик x{1.5 ** multi_level:.1f} — {multi_price}💰",
-            callback_data="buy_multi"
-        )],
-        [InlineKeyboardButton(
-            f"⚡ Автокликер +{0.5 * auto_level:.1f}/сек — {auto_price}💰",
-            callback_data="buy_auto"
-        )],
-        [InlineKeyboardButton(
-            f"💎 Бонус клика +{bonus_level * 5}% — {bonus_price}💰",
-            callback_data="buy_bonus"
-        )],
+        [
+            InlineKeyboardButton(
+                f"🔹 Мультиклик x{1.5 ** multi_level:.1f} — {multi_price}💰",
+                callback_data="buy_multi"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                f"⚡ Автокликер +{0.5 * auto_level:.1f}/сек — {auto_price}💰",
+                callback_data="buy_auto"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                f"💎 Бонус клика +{bonus_level * 5}% — {bonus_price}💰",
+                callback_data="buy_bonus"
+            )
+        ],
         [InlineKeyboardButton("🔙 Назад", callback_data="back_shop")],
     ]
-    
-    # ВАЖНО: используем InlineKeyboardMarkup
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     msg = (
@@ -552,11 +553,7 @@ async def show_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"<i>Нажми на кнопку для покупки!</i>"
     )
     
-    await update.message.reply_text(
-        text=msg,
-        reply_markup=reply_markup,
-        parse_mode="HTML"
-    )
+    await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode="HTML")
 
 async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -572,6 +569,17 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     boosts = user_data.get('boosts', {})
     
+    # Обработка возврата в меню
+    if action == "back_shop":
+        keyboard = get_admin_keyboard() if is_admin(user_id) else get_main_keyboard()
+        await query.edit_message_text(
+            "🍐 <b>Pear Clicker</b>\n\nГлавное меню",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        return
+    
+    # Определяем тип покупки
     if action == "buy_multi":
         boost_type = 'multi_click'
         base_price = 100
@@ -584,15 +592,6 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         boost_type = 'click_bonus'
         base_price = 150
         name = "Бонус клика"
-    elif action == "back_shop":
-        # Возврат в меню
-        keyboard = get_admin_keyboard() if is_admin(user_id) else get_main_keyboard()
-        await query.edit_message_text(
-            "🍐 <b>Pear Clicker</b>\n\nГлавное меню",
-            reply_markup=keyboard,
-            parse_mode="HTML"
-        )
-        return
     else:
         await query.edit_message_text("❌ Неизвестная команда!")
         return
@@ -885,7 +884,7 @@ async def handle_create_promocode(update: Update, context: ContextTypes.DEFAULT_
     context.user_data.pop('creating_promocode', None)
 
 # ============================================
-# NFT ФУНКЦИИ
+# NFT ФУНКЦИИ (СОКРАЩЕНЫ ДЛЯ ЭКОНОМИИ МЕСТА)
 # ============================================
 
 async def show_nft_market(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1217,7 +1216,7 @@ async def player_buy_nft(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ============================================
-# БАНК
+# БАНК (СОКРАЩЕН)
 # ============================================
 
 async def bank_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2200,7 +2199,6 @@ async def promo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """📢 Рассылка всем игрокам"""
     user_id = update.effective_user.id
     
     if not is_admin(user_id):
