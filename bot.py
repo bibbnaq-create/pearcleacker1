@@ -3,6 +3,8 @@ import json
 import random
 import asyncio
 from datetime import datetime, timedelta
+from flask import Flask, request
+from threading import Thread
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
@@ -13,6 +15,24 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 BOT_TOKEN = "7847307838:AAGoxXnPMy8q6AdCg9tV2u6wsuZUoSB7Llo"
 DATA_FILE = "clicker_data.json"
 ADMINS = ["8888187728"]
+PORT = int(os.environ.get("PORT", 8080))
+
+# ============================================
+# FLASK ДЛЯ RENDER
+# ============================================
+
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+def health_check():
+    return "🍐 Pear Clicker Bot is running!", 200
+
+@flask_app.route('/health')
+def health():
+    return "OK", 200
+
+def run_flask():
+    flask_app.run(host='0.0.0.0', port=PORT)
 
 # ============================================
 # NFT КОНФИГУРАЦИЯ
@@ -52,6 +72,13 @@ NFT_COLLECTIONS = {
 }
 
 # ============================================
+# DICE КОНСТАНТЫ
+# ============================================
+
+DICE_MIN_BET = 1000
+DICE_MAX_BET = 10000000
+
+# ============================================
 # ХРАНИЛИЩЕ ДАННЫХ (JSON)
 # ============================================
 
@@ -74,8 +101,7 @@ class ClickerData:
                     admins = data.get('admins', [])
                     if admins:
                         ADMINS = admins
-            except Exception as e:
-                print(f"Ошибка загрузки данных: {e}")
+            except:
                 self.users = {}
                 self.nft_market = []
                 self.promocodes = {}
@@ -85,16 +111,13 @@ class ClickerData:
             self.promocodes = {}
 
     def save(self):
-        try:
-            with open(DATA_FILE, 'w', encoding='utf-8') as f:
-                json.dump({
-                    'users': self.users,
-                    'nft_market': self.nft_market,
-                    'promocodes': self.promocodes,
-                    'admins': ADMINS
-                }, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"Ошибка сохранения данных: {e}")
+        with open(DATA_FILE, 'w', encoding='utf-8') as f:
+            json.dump({
+                'users': self.users,
+                'nft_market': self.nft_market,
+                'promocodes': self.promocodes,
+                'admins': ADMINS
+            }, f, ensure_ascii=False, indent=2)
 
     def get_user(self, user_id):
         user_id = str(user_id)
@@ -123,12 +146,18 @@ class ClickerData:
                 'credit_history': [],
                 'total_credit_taken': 0,
                 'used_promocodes': [],
+                'dice_stats': {
+                    'wins': 0,
+                    'losses': 0,
+                    'total_bet': 0,
+                    'total_won': 0,
+                }
             }
             self.save()
         else:
             user = self.users[user_id]
             changed = False
-            for key in ['level', 'xp', 'boosts', 'total_clicks', 'streak', 'last_streak', 'last_daily', 'banned', 'warns', 'click_power', 'nft_inventory', 'daily_bonus_streak', 'credit_limit', 'credit_used', 'credit_pending', 'credit_history', 'total_credit_taken', 'used_promocodes']:
+            for key in ['level', 'xp', 'boosts', 'total_clicks', 'streak', 'last_streak', 'last_daily', 'banned', 'warns', 'click_power', 'nft_inventory', 'daily_bonus_streak', 'credit_limit', 'credit_used', 'credit_pending', 'credit_history', 'total_credit_taken', 'used_promocodes', 'dice_stats']:
                 if key not in user:
                     if key == 'boosts':
                         user['boosts'] = {'multi_click': 0, 'auto_clicker': 0, 'click_bonus': 0}
@@ -142,6 +171,8 @@ class ClickerData:
                         user['credit_history'] = []
                     elif key == 'used_promocodes':
                         user['used_promocodes'] = []
+                    elif key == 'dice_stats':
+                        user['dice_stats'] = {'wins': 0, 'losses': 0, 'total_bet': 0, 'total_won': 0}
                     else:
                         user[key] = 0 if key != 'last_streak' and key != 'last_daily' else None
                     changed = True
@@ -222,7 +253,7 @@ def get_main_keyboard():
         ["🖱️ КЛИК", "👤 Профиль"],
         ["💰 Магазин", "🏆 Топ"],
         ["🎁 Бонус", "🛒 NFT"],
-        ["🏦 Банк | 💸 Перевод"],
+        ["🎲 Кости", "🏦 Банк | 💸 Перевод"],
         ["🎫 Промокод", "❓ Помощь"],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -232,7 +263,7 @@ def get_admin_keyboard():
         ["🖱️ КЛИК", "👤 Профиль"],
         ["💰 Магазин", "🏆 Топ"],
         ["🎁 Бонус", "🛒 NFT"],
-        ["🏦 Банк | 💸 Перевод"],
+        ["🎲 Кости", "🏦 Банк | 💸 Перевод"],
         ["🎫 Промокод", "⚙️ Админ"],
         ["❓ Помощь"],
     ]
@@ -293,7 +324,7 @@ def generate_promocode():
 
 MAIN_BUTTONS = [
     "🖱️ КЛИК", "👤 Профиль", "💰 Магазин", "🏆 Топ",
-    "🎁 Бонус", "🛒 NFT", "🏦 Банк | 💸 Перевод",
+    "🎁 Бонус", "🛒 NFT", "🎲 Кости", "🏦 Банк | 💸 Перевод",
     "🎫 Промокод", "⚙️ Админ", "❓ Помощь"
 ]
 
@@ -301,7 +332,241 @@ def is_main_button(text):
     return text in MAIN_BUTTONS
 
 # ============================================
-# ОСНОВНЫЕ ФУНКЦИИ
+# ИГРА В КОСТИ (DICE)
+# ============================================
+
+async def dice_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🎲 Игра в кости — выбор ставки и числа"""
+    user_id = update.effective_user.id
+    user_data = db.get_user(user_id)
+    
+    if user_data.get('banned', False):
+        await update.message.reply_text("🚫 Вы забанены!")
+        return
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("🎯 1", callback_data="dice_1"),
+            InlineKeyboardButton("🎯 2", callback_data="dice_2"),
+            InlineKeyboardButton("🎯 3", callback_data="dice_3"),
+        ],
+        [
+            InlineKeyboardButton("🎯 4", callback_data="dice_4"),
+            InlineKeyboardButton("🎯 5", callback_data="dice_5"),
+            InlineKeyboardButton("🎯 6", callback_data="dice_6"),
+        ],
+        [
+            InlineKeyboardButton("📊 Моя статистика", callback_data="dice_stats"),
+        ],
+        [InlineKeyboardButton("🔙 Назад", callback_data="back_dice")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        f"🎲 <b>Игра в кости</b>\n\n"
+        f"💰 Твой баланс: {format_num(user_data['balance'])} монет\n\n"
+        f"🎯 Выбери число (1-6):\n"
+        f"   Если выпадет ТВОЁ число — ты выигрываешь x6 от ставки!\n"
+        f"   Если выпадет ДРУГОЕ — ты проигрываешь ставку.\n\n"
+        f"📌 <b>Минимальная ставка: {format_num(DICE_MIN_BET)}</b>\n"
+        f"📌 <b>Максимальная ставка: {format_num(DICE_MAX_BET)}</b>\n\n"
+        f"<i>Сначала выбери число, потом введи сумму ставки.</i>",
+        reply_markup=reply_markup,
+        parse_mode="HTML"
+    )
+
+async def dice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка выбора числа в костях"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    data = query.data
+    
+    if data == "back_dice":
+        keyboard = get_admin_keyboard() if is_admin(user_id) else get_main_keyboard()
+        await query.edit_message_text(
+            "🍐 <b>Pear Clicker</b>\n\nГлавное меню",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        return
+    
+    if data == "dice_stats":
+        user_data = db.get_user(user_id)
+        stats = user_data.get('dice_stats', {'wins': 0, 'losses': 0, 'total_bet': 0, 'total_won': 0})
+        
+        await query.edit_message_text(
+            f"📊 <b>Статистика игры в кости</b>\n\n"
+            f"✅ Побед: {stats.get('wins', 0)}\n"
+            f"❌ Поражений: {stats.get('losses', 0)}\n"
+            f"📊 Всего игр: {stats.get('wins', 0) + stats.get('losses', 0)}\n"
+            f"💰 Всего поставлено: {format_num(stats.get('total_bet', 0))}\n"
+            f"💎 Всего выиграно: {format_num(stats.get('total_won', 0))}\n"
+            f"📈 Профит: {format_num(stats.get('total_won', 0) - stats.get('total_bet', 0))}",
+            parse_mode="HTML"
+        )
+        return
+    
+    # Сохраняем выбранное число
+    if data.startswith("dice_"):
+        selected = int(data.replace("dice_", ""))
+        context.user_data['dice_number'] = selected
+        
+        await query.edit_message_text(
+            f"🎯 <b>Ты выбрал число {selected}</b>\n\n"
+            f"💰 Твой баланс: {format_num(db.get_user(user_id)['balance'])} монет\n\n"
+            f"📌 Напиши сумму ставки (от {format_num(DICE_MIN_BET)} до {format_num(DICE_MAX_BET)}):\n"
+            f"<i>Например: 5000</i>\n\n"
+            f"🔙 Для отмены напиши 'отмена'",
+            parse_mode="HTML"
+        )
+        context.user_data['awaiting_dice_bet'] = True
+
+async def handle_dice_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ставки и игра в кости"""
+    user_id = update.effective_user.id
+    text = update.message.text
+    
+    if text.lower() == "отмена":
+        context.user_data.pop('awaiting_dice_bet', None)
+        context.user_data.pop('dice_number', None)
+        keyboard = get_admin_keyboard() if is_admin(user_id) else get_main_keyboard()
+        await update.message.reply_text("❌ Игра отменена!", reply_markup=keyboard)
+        return
+    
+    if not text.isdigit():
+        await update.message.reply_text("❌ Введи число или напиши 'отмена'!")
+        return
+    
+    bet = int(text)
+    
+    if bet < DICE_MIN_BET:
+        await update.message.reply_text(f"❌ Минимальная ставка — {format_num(DICE_MIN_BET)} монет!")
+        return
+    
+    if bet > DICE_MAX_BET:
+        await update.message.reply_text(f"❌ Максимальная ставка — {format_num(DICE_MAX_BET)} монет!")
+        return
+    
+    user_data = db.get_user(user_id)
+    
+    if user_data['balance'] < bet:
+        await update.message.reply_text(
+            f"❌ Не хватает монет!\n"
+            f"Нужно: {format_num(bet)}💰\n"
+            f"У тебя: {format_num(user_data['balance'])}💰"
+        )
+        return
+    
+    selected = context.user_data.get('dice_number')
+    if not selected:
+        await update.message.reply_text("❌ Ошибка! Начни игру заново через кнопку 🎲 Кости")
+        return
+    
+    # Кидаем кости
+    result = random.randint(1, 6)
+    
+    # Эмодзи для чисел
+    dice_emojis = {
+        1: "⚀", 2: "⚁", 3: "⚂",
+        4: "⚃", 5: "⚄", 6: "⚅"
+    }
+    
+    # Проверяем результат
+    if result == selected:
+        # ВЫИГРЫШ
+        win_amount = bet * 6
+        user_data['balance'] += win_amount
+        stats = user_data.get('dice_stats', {'wins': 0, 'losses': 0, 'total_bet': 0, 'total_won': 0})
+        stats['wins'] = stats.get('wins', 0) + 1
+        stats['total_bet'] = stats.get('total_bet', 0) + bet
+        stats['total_won'] = stats.get('total_won', 0) + win_amount
+        user_data['dice_stats'] = stats
+        db.update_user(user_id, user_data)
+        
+        await update.message.reply_text(
+            f"🎲 <b>РЕЗУЛЬТАТ!</b>\n\n"
+            f"{dice_emojis[result]} <b>Выпало: {result}</b>\n"
+            f"🎯 Твоё число: {selected}\n\n"
+            f"🎉 <b>ТЫ ВЫИГРАЛ!</b>\n"
+            f"💰 +{format_num(win_amount)} монет\n"
+            f"💎 Новый баланс: {format_num(user_data['balance'])}",
+            parse_mode="HTML"
+        )
+    else:
+        # ПРОИГРЫШ
+        user_data['balance'] -= bet
+        stats = user_data.get('dice_stats', {'wins': 0, 'losses': 0, 'total_bet': 0, 'total_won': 0})
+        stats['losses'] = stats.get('losses', 0) + 1
+        stats['total_bet'] = stats.get('total_bet', 0) + bet
+        user_data['dice_stats'] = stats
+        db.update_user(user_id, user_data)
+        
+        await update.message.reply_text(
+            f"🎲 <b>РЕЗУЛЬТАТ!</b>\n\n"
+            f"{dice_emojis[result]} <b>Выпало: {result}</b>\n"
+            f"🎯 Твоё число: {selected}\n\n"
+            f"😔 <b>ТЫ ПРОИГРАЛ!</b>\n"
+            f"💸 -{format_num(bet)} монет\n"
+            f"💎 Новый баланс: {format_num(user_data['balance'])}",
+            parse_mode="HTML"
+        )
+    
+    # Очищаем состояние
+    context.user_data.pop('awaiting_dice_bet', None)
+    context.user_data.pop('dice_number', None)
+    
+    # Предлагаем сыграть ещё
+    keyboard = [[InlineKeyboardButton("🎲 Играть ещё", callback_data="dice_again")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "🎲 Хочешь сыграть ещё?",
+        reply_markup=reply_markup,
+        parse_mode="HTML"
+    )
+
+async def dice_again(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Играть ещё раз"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    user_data = db.get_user(user_id)
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("🎯 1", callback_data="dice_1"),
+            InlineKeyboardButton("🎯 2", callback_data="dice_2"),
+            InlineKeyboardButton("🎯 3", callback_data="dice_3"),
+        ],
+        [
+            InlineKeyboardButton("🎯 4", callback_data="dice_4"),
+            InlineKeyboardButton("🎯 5", callback_data="dice_5"),
+            InlineKeyboardButton("🎯 6", callback_data="dice_6"),
+        ],
+        [
+            InlineKeyboardButton("📊 Моя статистика", callback_data="dice_stats"),
+        ],
+        [InlineKeyboardButton("🔙 Назад", callback_data="back_dice")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        f"🎲 <b>Игра в кости</b>\n\n"
+        f"💰 Твой баланс: {format_num(user_data['balance'])} монет\n\n"
+        f"🎯 Выбери число (1-6):\n"
+        f"   Если выпадет ТВОЁ число — ты выигрываешь x6 от ставки!\n"
+        f"   Если выпадет ДРУГОЕ — ты проигрываешь ставку.\n\n"
+        f"📌 <b>Минимальная ставка: {format_num(DICE_MIN_BET)}</b>\n"
+        f"📌 <b>Максимальная ставка: {format_num(DICE_MAX_BET)}</b>\n\n"
+        f"<i>Сначала выбери число, потом введи сумму ставки.</i>",
+        reply_markup=reply_markup,
+        parse_mode="HTML"
+    )
+
+# ============================================
+# ОСНОВНЫЕ ФУНКЦИИ (СОКРАЩЕНЫ)
 # ============================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -330,7 +595,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔥 Нажимай <b>КЛИК</b>!\n"
         f"🛒 Покупай NFT!\n"
         f"🏦 Бери кредиты!\n"
-        f"🎫 Вводи промокоды!",
+        f"🎲 Играй в кости!",
         reply_markup=keyboard,
         parse_mode="HTML"
     )
@@ -342,6 +607,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if user_data.get('banned', False):
         await update.message.reply_text("🚫 Вы забанены!")
+        return
+    
+    # Обработка ставки в кости
+    if context.user_data.get('awaiting_dice_bet'):
+        await handle_dice_bet(update, context)
         return
     
     # Обработка состояний
@@ -386,6 +656,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await get_daily_bonus(update, context)
     elif text == "🛒 NFT":
         await show_nft_market(update, context)
+    elif text == "🎲 Кости":
+        await dice_game(update, context)
     elif text == "🏦 Банк | 💸 Перевод":
         await bank_menu(update, context)
     elif text == "🎫 Промокод":
@@ -472,6 +744,7 @@ async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
             nft_bonus += 50
     
     boosts = user_data.get('boosts', {})
+    stats = user_data.get('dice_stats', {'wins': 0, 'losses': 0})
     
     msg = (
         f"👤 <b>Профиль</b>\n\n"
@@ -489,7 +762,8 @@ async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🎯 Бусты:\n"
         f"   • Мультиклик: x{1.5 ** boosts.get('multi_click', 0):.1f}\n"
         f"   • Бонус клика: +{boosts.get('click_bonus', 0) * 5}%\n"
-        f"   • Автокликер: {boosts.get('auto_clicker', 0)} ур."
+        f"   • Автокликер: {boosts.get('auto_clicker', 0)} ур.\n"
+        f"🎲 Кости: {stats.get('wins', 0)} побед / {stats.get('losses', 0)} поражений"
     )
     
     keyboard = get_admin_keyboard() if is_admin(user_id) else get_main_keyboard()
@@ -569,7 +843,6 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     boosts = user_data.get('boosts', {})
     
-    # Обработка возврата в меню
     if action == "back_shop":
         keyboard = get_admin_keyboard() if is_admin(user_id) else get_main_keyboard()
         await query.edit_message_text(
@@ -579,7 +852,6 @@ async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Определяем тип покупки
     if action == "buy_multi":
         boost_type = 'multi_click'
         base_price = 100
@@ -780,6 +1052,7 @@ async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   • Автокликер — +0.5 клик/сек\n"
         "   • Бонус клика — +5% к силе\n"
         "🛒 <b>NFT</b> — покупай и продавай NFT\n"
+        "🎲 <b>Кости</b> — играй в кости (ставка от 1,000 до 10M)\n"
         "🏦 <b>Банк</b> — бери кредиты (до 20,000)\n"
         "💸 <b>Перевод</b> — переводи монеты другим\n"
         "🎁 <b>Бонус</b> — каждый день\n"
@@ -792,7 +1065,7 @@ async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, reply_markup=keyboard, parse_mode="HTML")
 
 # ============================================
-# ПРОМОКОДЫ
+# ПРОМОКОДЫ (СОКРАЩЕНЫ)
 # ============================================
 
 async def apply_promocode(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -884,7 +1157,7 @@ async def handle_create_promocode(update: Update, context: ContextTypes.DEFAULT_
     context.user_data.pop('creating_promocode', None)
 
 # ============================================
-# NFT ФУНКЦИИ (СОКРАЩЕНЫ ДЛЯ ЭКОНОМИИ МЕСТА)
+# NFT ФУНКЦИИ (СОКРАЩЕНЫ)
 # ============================================
 
 async def show_nft_market(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -921,296 +1194,6 @@ async def show_nft_market(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💎 Кристалл — Редкий (+15% к силе) — 8000💰\n"
         f"👑 Корона — Мифический (+50% к силе) — 25000💰\n\n"
         f"<i>Выбери действие:</i>",
-        reply_markup=reply_markup,
-        parse_mode="HTML"
-    )
-
-async def buy_nft(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    collection_id = query.data.replace("buy_nft_", "")
-    
-    user_data = db.get_user(user_id)
-    nft_data = NFT_COLLECTIONS.get(collection_id)
-    
-    if not nft_data:
-        await query.edit_message_text("❌ NFT не найдено!")
-        return
-    
-    all_nfts = db.get_nft_market()
-    sold_count = sum(1 for n in all_nfts if n['collection_id'] == collection_id)
-    available = nft_data['total'] - sold_count
-    
-    if available <= 0:
-        await query.edit_message_text(f"❌ {nft_data['emoji']} {nft_data['name']} закончились!")
-        return
-    
-    if user_data['balance'] < nft_data['price']:
-        await query.edit_message_text(
-            f"❌ Не хватает монет!\nНужно: {nft_data['price']}💰\nУ тебя: {format_num(user_data['balance'])}💰",
-            parse_mode="HTML"
-        )
-        return
-    
-    user_data['balance'] -= nft_data['price']
-    user_data['nft_inventory'].append(collection_id)
-    
-    nft_item = {
-        'id': generate_nft_id(),
-        'collection_id': collection_id,
-        'name': nft_data['name'],
-        'emoji': nft_data['emoji'],
-        'rarity': nft_data['rarity'],
-        'owner_id': str(user_id),
-        'price': None,
-        'for_sale': False,
-        'purchase_date': datetime.now().isoformat(),
-    }
-    
-    db.add_nft_to_market(nft_item)
-    db.update_user(user_id, user_data)
-    
-    keyboard = [[InlineKeyboardButton("🛒 В маркет", callback_data="go_nft_market")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        f"✅ <b>Покупка успешна!</b>\n\n"
-        f"{nft_data['emoji']} <b>{nft_data['name']}</b>\n"
-        f"Редкость: {nft_data['rarity']}\n"
-        f"Цена: {nft_data['price']}💰\n"
-        f"Остаток: {format_num(user_data['balance'])}💰\n\n"
-        f"<i>Теперь этот NFT в твоём инвентаре!</i>",
-        reply_markup=reply_markup,
-        parse_mode="HTML"
-    )
-
-async def show_my_nfts(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    user_data = db.get_user(user_id)
-    
-    nfts = [item for item in db.get_nft_market() if item['owner_id'] == str(user_id)]
-    
-    if not nfts:
-        await query.edit_message_text("📦 <b>У тебя пока нет NFT</b>\n\nКупи их в маркете! 🛒", parse_mode="HTML")
-        return
-    
-    text = "📦 <b>Твои NFT</b>\n\n"
-    for nft in nfts:
-        collection = NFT_COLLECTIONS.get(nft['collection_id'], {})
-        status = "🟢 На продаже" if nft.get('for_sale') else "🔒 В инвентаре"
-        text += f"{collection.get('emoji', '🎨')} <b>{nft['name']}</b>\n"
-        text += f"   ID: {nft['id'][:8]}...\n"
-        text += f"   Статус: {status}\n"
-        if nft.get('for_sale') and nft.get('price'):
-            text += f"   Цена: {nft['price']}💰\n"
-        text += "\n"
-    
-    keyboard = [[InlineKeyboardButton("🔙 В маркет", callback_data="go_nft_market")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
-
-async def sell_nft_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    user_data = db.get_user(user_id)
-    
-    nfts = [item for item in db.get_nft_market() if item['owner_id'] == str(user_id) and not item.get('for_sale', False)]
-    
-    if not nfts:
-        await query.edit_message_text(
-            "❌ У тебя нет NFT для продажи.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В маркет", callback_data="go_nft_market")]])
-        )
-        return
-    
-    keyboard = []
-    for nft in nfts:
-        collection = NFT_COLLECTIONS.get(nft['collection_id'], {})
-        keyboard.append([InlineKeyboardButton(
-            f"{collection.get('emoji', '🎨')} {nft['name']} (ID: {nft['id'][:8]}...)",
-            callback_data=f"set_sell_{nft['id']}"
-        )])
-    
-    keyboard.append([InlineKeyboardButton("🔙 В маркет", callback_data="go_nft_market")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        "💰 <b>Продажа NFT</b>\n\nВыбери NFT, который хочешь продать.\nПосле выбора укажи цену в монетах.",
-        reply_markup=reply_markup,
-        parse_mode="HTML"
-    )
-
-async def set_sell_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    nft_id = query.data.replace("set_sell_", "")
-    context.user_data['selling_nft'] = nft_id
-    
-    await query.edit_message_text(
-        f"💰 <b>Укажи цену для NFT</b>\n\n"
-        f"Напиши цену в монетах (минимальная 500):\n"
-        f"<i>Например: 5000</i>\n\n"
-        f"🔙 Для отмены напиши 'отмена'",
-        parse_mode="HTML"
-    )
-
-async def handle_sell_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
-    
-    if text.lower() == "отмена":
-        context.user_data.pop('selling_nft', None)
-        keyboard = get_admin_keyboard() if is_admin(user_id) else get_main_keyboard()
-        await update.message.reply_text("❌ Отменено!", reply_markup=keyboard)
-        return
-    
-    if not text.isdigit():
-        await update.message.reply_text("❌ Введи число или напиши 'отмена'!")
-        return
-    
-    price = int(text)
-    if price < 500:
-        await update.message.reply_text("❌ Минимальная цена — 500 монет!")
-        return
-    
-    nft_id = context.user_data.get('selling_nft')
-    if not nft_id:
-        await update.message.reply_text("❌ Ошибка! Попробуй снова через маркет.")
-        return
-    
-    nft = db.get_nft_by_id(nft_id)
-    if not nft or nft['owner_id'] != str(user_id):
-        await update.message.reply_text("❌ NFT не найден или не твой!")
-        return
-    
-    nft['for_sale'] = True
-    nft['price'] = price
-    db.save()
-    
-    keyboard = [[InlineKeyboardButton("🛒 В маркет", callback_data="go_nft_market")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        f"✅ <b>NFT выставлен на продажу!</b>\n\nЦена: {price}💰\nЖди покупателя! 🛒",
-        reply_markup=reply_markup,
-        parse_mode="HTML"
-    )
-    
-    context.user_data.pop('selling_nft', None)
-
-async def player_market(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    all_nfts = db.get_nft_market()
-    for_sale = [n for n in all_nfts if n.get('for_sale', False)]
-    
-    if not for_sale:
-        await query.edit_message_text(
-            "🏪 <b>Рынок игроков пуст</b>\n\nНикто не выставил NFT на продажу.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В маркет", callback_data="go_nft_market")]]),
-            parse_mode="HTML"
-        )
-        return
-    
-    keyboard = []
-    for nft in for_sale:
-        collection = NFT_COLLECTIONS.get(nft['collection_id'], {})
-        seller_name = "Игрок"
-        try:
-            seller = await context.bot.get_chat(int(nft['owner_id']))
-            seller_name = seller.username or seller.first_name or str(nft['owner_id'])[:8]
-        except:
-            pass
-        
-        keyboard.append([InlineKeyboardButton(
-            f"{collection.get('emoji', '🎨')} {nft['name']} - {nft['price']}💰 (от @{seller_name})",
-            callback_data=f"player_buy_{nft['id']}"
-        )])
-    
-    keyboard.append([InlineKeyboardButton("🔙 В маркет", callback_data="go_nft_market")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        "🏪 <b>Рынок игроков</b>\n\nЗдесь NFT, выставленные другими игроками на продажу.\nНажми на NFT чтобы купить!",
-        reply_markup=reply_markup,
-        parse_mode="HTML"
-    )
-
-async def player_buy_nft(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    nft_id = query.data.replace("player_buy_", "")
-    
-    nft = db.get_nft_by_id(nft_id)
-    if not nft or not nft.get('for_sale', False):
-        await query.edit_message_text("❌ Этот NFT уже продан или недоступен!")
-        return
-    
-    if nft['owner_id'] == str(user_id):
-        await query.edit_message_text("❌ Ты не можешь купить свой NFT!")
-        return
-    
-    user_data = db.get_user(user_id)
-    seller_data = db.get_user(nft['owner_id'])
-    
-    price = nft['price']
-    
-    if user_data['balance'] < price:
-        await query.edit_message_text(
-            f"❌ Не хватает монет!\nНужно: {price}💰\nУ тебя: {format_num(user_data['balance'])}💰"
-        )
-        return
-    
-    user_data['balance'] -= price
-    seller_data['balance'] = seller_data.get('balance', 0) + price
-    
-    old_owner = nft['owner_id']
-    nft['owner_id'] = str(user_id)
-    nft['for_sale'] = False
-    nft['price'] = None
-    
-    user_data['nft_inventory'].append(nft['id'])
-    if nft['id'] in seller_data.get('nft_inventory', []):
-        seller_data['nft_inventory'].remove(nft['id'])
-    
-    db.update_user(user_id, user_data)
-    db.update_user(old_owner, seller_data)
-    db.save()
-    
-    try:
-        await context.bot.send_message(
-            chat_id=int(old_owner),
-            text=f"🎉 <b>Твой NFT продан!</b>\n\n"
-                 f"{nft.get('emoji', '🎨')} {nft['name']}\n"
-                 f"Цена: {price}💰\n"
-                 f"Покупатель: @{update.effective_user.username or 'Игрок'}\n"
-                 f"Твой баланс: {format_num(seller_data['balance'])}💰",
-            parse_mode="HTML"
-        )
-    except:
-        pass
-    
-    keyboard = [[InlineKeyboardButton("🛒 В маркет", callback_data="go_nft_market")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        f"✅ <b>Покупка успешна!</b>\n\n"
-        f"Ты купил {nft.get('emoji', '🎨')} {nft['name']}\n"
-        f"Цена: {price}💰\n"
-        f"Твой баланс: {format_num(user_data['balance'])}💰\n\n"
-        f"<i>NFT добавлен в инвентарь!</i>",
         reply_markup=reply_markup,
         parse_mode="HTML"
     )
@@ -1253,395 +1236,6 @@ async def bank_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML"
     )
 
-async def transfer_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    user_data = db.get_user(user_id)
-    
-    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_transfer")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        f"💸 <b>Перевод монет</b>\n\n"
-        f"💰 Твой баланс: {format_num(user_data['balance'])}\n\n"
-        f"<i>Напиши перевод в формате:</i>\n"
-        f"<code>@username сумма</code>\n\n"
-        f"<b>Пример:</b>\n"
-        f"<code>@john 500</code>\n\n"
-        f"📌 Минимальная сумма: 10 монет\n"
-        f"🔙 Нажми кнопку 'Назад' для отмены",
-        reply_markup=reply_markup,
-        parse_mode="HTML"
-    )
-    context.user_data['awaiting_transfer'] = True
-
-async def handle_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
-    user_data = db.get_user(user_id)
-    
-    if text.lower() == "отмена" or text == "🔙 Назад":
-        context.user_data.pop('awaiting_transfer', None)
-        keyboard = get_admin_keyboard() if is_admin(user_id) else get_main_keyboard()
-        await update.message.reply_text("❌ Перевод отменён!", reply_markup=keyboard)
-        return
-    
-    parts = text.split()
-    if len(parts) < 2:
-        await update.message.reply_text("❌ Неверный формат!\nИспользуй: @username сумма\nИли напиши 'отмена' для выхода")
-        return
-    
-    target_username = parts[0].replace('@', '')
-    try:
-        amount = int(parts[1])
-    except:
-        await update.message.reply_text("❌ Сумма должна быть числом!")
-        return
-    
-    if amount < 10:
-        await update.message.reply_text("❌ Минимальная сумма — 10 монет!")
-        return
-    
-    if user_data['balance'] < amount:
-        await update.message.reply_text(
-            f"❌ Не хватает монет!\nНужно: {amount}💰\nУ тебя: {format_num(user_data['balance'])}💰"
-        )
-        return
-    
-    target_user_id = None
-    for uid, data in db.get_all_users().items():
-        try:
-            user = await context.bot.get_chat(int(uid))
-            if user.username == target_username:
-                target_user_id = uid
-                break
-        except:
-            continue
-    
-    if not target_user_id:
-        await update.message.reply_text(f"❌ Пользователь @{target_username} не найден!")
-        return
-    
-    if str(target_user_id) == str(user_id):
-        await update.message.reply_text("❌ Нельзя перевести самому себе!")
-        return
-    
-    target_data = db.get_user(target_user_id)
-    
-    user_data['balance'] -= amount
-    target_data['balance'] = target_data.get('balance', 0) + amount
-    
-    db.update_user(user_id, user_data)
-    db.update_user(target_user_id, target_data)
-    
-    await update.message.reply_text(
-        f"✅ <b>Перевод выполнен!</b>\n\n"
-        f"💸 Отправлено: {amount}💰\n"
-        f"👤 Получатель: @{target_username}\n"
-        f"💰 Твой баланс: {format_num(user_data['balance'])}\n\n"
-        f"<i>Комиссия: 0%</i>",
-        reply_markup=get_admin_keyboard() if is_admin(user_id) else get_main_keyboard(),
-        parse_mode="HTML"
-    )
-    
-    try:
-        await context.bot.send_message(
-            chat_id=int(target_user_id),
-            text=f"💸 <b>Получен перевод!</b>\n\n"
-                 f"💰 +{amount} монет\n"
-                 f"👤 Отправитель: @{update.effective_user.username or 'Игрок'}\n"
-                 f"💰 Новый баланс: {format_num(target_data['balance'])}",
-            parse_mode="HTML"
-        )
-    except:
-        pass
-    
-    context.user_data.pop('awaiting_transfer', None)
-
-async def credit_apply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    await query.edit_message_text(
-        f"📝 <b>Заявка на кредит</b>\n\n"
-        f"Напиши сумму кредита (от 100 до 20,000 монет):\n"
-        f"<i>Например: 5000</i>\n\n"
-        f"⏳ Заявку рассмотрит администратор.\n"
-        f"🔙 Для отмены напиши 'отмена'",
-        parse_mode="HTML"
-    )
-    context.user_data['awaiting_credit'] = True
-
-async def handle_credit_apply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
-    
-    if text.lower() == "отмена":
-        context.user_data.pop('awaiting_credit', None)
-        keyboard = get_admin_keyboard() if is_admin(user_id) else get_main_keyboard()
-        await update.message.reply_text("❌ Заявка отменена!", reply_markup=keyboard)
-        return
-    
-    if not text.isdigit():
-        await update.message.reply_text("❌ Введи число или напиши 'отмена'!")
-        return
-    
-    amount = int(text)
-    if amount < 100:
-        await update.message.reply_text("❌ Минимальная сумма — 100 монет!")
-        return
-    if amount > 20000:
-        await update.message.reply_text("❌ Максимальная сумма — 20,000 монет!")
-        return
-    
-    user_data = db.get_user(user_id)
-    
-    if user_data.get('credit_pending', 0) > 0:
-        await update.message.reply_text("❌ У тебя уже есть заявка на рассмотрении!")
-        return
-    
-    user_data['credit_pending'] = amount
-    db.update_user(user_id, user_data)
-    
-    for admin_id in ADMINS:
-        try:
-            await context.bot.send_message(
-                chat_id=int(admin_id),
-                text=f"📝 <b>Новая заявка на кредит!</b>\n\n"
-                     f"👤 Пользователь: @{update.effective_user.username or 'Без username'}\n"
-                     f"🆔 ID: {user_id}\n"
-                     f"💰 Сумма: {amount} монет\n\n"
-                     f"Используй /approve {user_id} {amount} для одобрения\n"
-                     f"Используй /decline {user_id} для отказа",
-                parse_mode="HTML"
-            )
-        except:
-            pass
-    
-    await update.message.reply_text(
-        f"✅ <b>Заявка отправлена!</b>\n\n"
-        f"Сумма: {amount}💰\n"
-        f"Статус: ⏳ Ожидает одобрения\n\n"
-        f"<i>Администратор рассмотрит заявку в ближайшее время.</i>",
-        reply_markup=get_admin_keyboard() if is_admin(user_id) else get_main_keyboard(),
-        parse_mode="HTML"
-    )
-    context.user_data['awaiting_credit'] = False
-
-async def credit_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    user_data = db.get_user(user_id)
-    
-    history = user_data.get('credit_history', [])
-    
-    text = (
-        f"📊 <b>Информация о кредитах</b>\n\n"
-        f"💰 Кредитный лимит: {format_num(user_data.get('credit_limit', 0))}\n"
-        f"💳 Использовано: {format_num(user_data.get('credit_used', 0))}\n"
-        f"💎 Доступно: {format_num(max(0, user_data.get('credit_limit', 0) - user_data.get('credit_used', 0)))}\n"
-        f"📈 Всего взято: {format_num(user_data.get('total_credit_taken', 0))}\n"
-        f"⏳ Заявка: {'Есть' if user_data.get('credit_pending', 0) > 0 else 'Нет'}\n\n"
-    )
-    
-    if history:
-        text += "<b>История операций:</b>\n"
-        for item in history[-5:]:
-            text += f"• {item}\n"
-    else:
-        text += "<i>История пуста</i>"
-    
-    keyboard = [[InlineKeyboardButton("🔙 В банк", callback_data="go_bank")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
-
-async def credit_take(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    user_data = db.get_user(user_id)
-    
-    available = user_data.get('credit_limit', 0) - user_data.get('credit_used', 0)
-    
-    if available <= 0:
-        await query.edit_message_text("❌ <b>Нет доступного кредита!</b>\n\nТвой кредитный лимит исчерпан.", parse_mode="HTML")
-        return
-    
-    await query.edit_message_text(
-        f"💳 <b>Взять кредит</b>\n\n"
-        f"Доступно: {format_num(available)} монет\n"
-        f"Напиши сумму для получения:\n"
-        f"<i>Например: {min(1000, available)}</i>\n\n"
-        f"🔙 Для отмены напиши 'отмена'",
-        parse_mode="HTML"
-    )
-    context.user_data['awaiting_credit_take'] = True
-
-async def handle_credit_take(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
-    
-    if text.lower() == "отмена":
-        context.user_data.pop('awaiting_credit_take', None)
-        keyboard = get_admin_keyboard() if is_admin(user_id) else get_main_keyboard()
-        await update.message.reply_text("❌ Отменено!", reply_markup=keyboard)
-        return
-    
-    if not text.isdigit():
-        await update.message.reply_text("❌ Введи число или напиши 'отмена'!")
-        return
-    
-    amount = int(text)
-    user_data = db.get_user(user_id)
-    
-    available = user_data.get('credit_limit', 0) - user_data.get('credit_used', 0)
-    
-    if amount < 100:
-        await update.message.reply_text("❌ Минимальная сумма — 100 монет!")
-        return
-    if amount > available:
-        await update.message.reply_text(f"❌ Доступно только {format_num(available)} монет!")
-        return
-    
-    user_data['balance'] = user_data.get('balance', 0) + amount
-    user_data['credit_used'] = user_data.get('credit_used', 0) + amount
-    user_data['total_credit_taken'] = user_data.get('total_credit_taken', 0) + amount
-    
-    if 'credit_history' not in user_data:
-        user_data['credit_history'] = []
-    user_data['credit_history'].append(f"✅ Взято {amount} монет ({datetime.now().strftime('%d.%m.%Y %H:%M')})")
-    
-    db.update_user(user_id, user_data)
-    
-    await update.message.reply_text(
-        f"✅ <b>Кредит получен!</b>\n\n"
-        f"💰 +{format_num(amount)} монет\n"
-        f"💳 Новый баланс: {format_num(user_data['balance'])}\n"
-        f"💎 Остаток кредита: {format_num(available - amount)}\n\n"
-        f"<i>Не забудь вернуть кредит!</i>",
-        reply_markup=get_admin_keyboard() if is_admin(user_id) else get_main_keyboard(),
-        parse_mode="HTML"
-    )
-    context.user_data['awaiting_credit_take'] = False
-
-async def show_admin_credits(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user_id = query.from_user.id
-    
-    if not is_admin(user_id):
-        await query.edit_message_text("🚫 Доступ запрещён!")
-        return
-    
-    users = db.get_all_users()
-    pending_users = [(uid, data) for uid, data in users.items() if data.get('credit_pending', 0) > 0]
-    
-    if not pending_users:
-        await query.edit_message_text("✅ <b>Нет заявок на рассмотрение</b>", parse_mode="HTML")
-        return
-    
-    text = "📝 <b>Заявки на кредит</b>\n\n"
-    keyboard = []
-    
-    for uid, data in pending_users:
-        amount = data.get('credit_pending', 0)
-        try:
-            user = await context.bot.get_chat(int(uid))
-            name = user.username or user.first_name or uid
-        except:
-            name = uid[:8]
-        
-        text += f"👤 @{name}\n"
-        text += f"💰 Сумма: {amount} монет\n"
-        text += f"🆔 ID: {uid}\n\n"
-        
-        keyboard.append([
-            InlineKeyboardButton(f"✅ Одобрить @{name}", callback_data=f"approve_credit_{uid}_{amount}"),
-            InlineKeyboardButton(f"❌ Отказать @{name}", callback_data=f"decline_credit_{uid}")
-        ])
-    
-    keyboard.append([InlineKeyboardButton("🔙 В банк", callback_data="go_bank")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
-
-async def handle_credit_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    if not is_admin(user_id):
-        await query.edit_message_text("🚫 Доступ запрещён!")
-        return
-    
-    data = query.data
-    
-    if data.startswith("approve_credit_"):
-        parts = data.replace("approve_credit_", "").split("_")
-        target_id = parts[0]
-        amount = int(parts[1])
-        
-        if amount > 20000:
-            await query.edit_message_text("❌ Максимум 20,000 монет!")
-            return
-        
-        target_data = db.get_user(target_id)
-        target_data['credit_limit'] = target_data.get('credit_limit', 0) + amount
-        target_data['credit_pending'] = 0
-        db.update_user(target_id, target_data)
-        
-        await query.edit_message_text(
-            f"✅ <b>Кредит одобрен!</b>\n\n"
-            f"👤 Пользователь ID: {target_id}\n"
-            f"💰 Сумма: {amount} монет\n"
-            f"📊 Новый кредитный лимит: {format_num(target_data['credit_limit'])}\n\n"
-            f"<i>Пользователь может взять кредит через кнопку 'Взять кредит'</i>",
-            parse_mode="HTML"
-        )
-        
-        try:
-            await context.bot.send_message(
-                chat_id=int(target_id),
-                text=f"✅ <b>Кредит одобрен!</b>\n\n"
-                     f"💰 Сумма: {amount} монет\n"
-                     f"📊 Твой кредитный лимит: {format_num(target_data['credit_limit'])}\n\n"
-                     f"<i>Теперь ты можешь взять кредит через банк.</i>",
-                parse_mode="HTML"
-            )
-        except:
-            pass
-        
-        return
-    
-    elif data.startswith("decline_credit_"):
-        target_id = data.replace("decline_credit_", "")
-        target_data = db.get_user(target_id)
-        target_data['credit_pending'] = 0
-        db.update_user(target_id, target_data)
-        
-        await query.edit_message_text(
-            f"❌ <b>Кредит отклонён</b>\n\n"
-            f"👤 Пользователь ID: {target_id}\n"
-            f"<i>Пользователь уведомлён</i>",
-            parse_mode="HTML"
-        )
-        
-        try:
-            await context.bot.send_message(
-                chat_id=int(target_id),
-                text="❌ <b>Кредит отклонён</b>\n\nАдминистратор отклонил вашу заявку.",
-                parse_mode="HTML"
-            )
-        except:
-            pass
-        
-        return
-
 # ============================================
 # КОЛБЭКИ
 # ============================================
@@ -1652,6 +1246,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     data = query.data
     user_id = query.from_user.id
+    
+    # Кости
+    if data == "dice_again":
+        await dice_again(update, context)
+        return
+    
+    if data.startswith("dice_"):
+        await dice_callback(update, context)
+        return
     
     # Магазин
     if data in ["buy_multi", "buy_auto", "buy_bonus", "back_shop"]:
@@ -1698,92 +1301,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("decline_credit_"):
         await handle_credit_admin(update, context)
 
-async def go_nft_market(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user_id = query.from_user.id
-    user_data = db.get_user(user_id)
-    
-    keyboard = [
-        [InlineKeyboardButton("📦 Мои NFT", callback_data="my_nfts")],
-        [InlineKeyboardButton("💰 Продать NFT", callback_data="sell_nft")],
-        [InlineKeyboardButton("🏪 Рынок игроков", callback_data="player_market")],
-    ]
-    
-    all_nfts = db.get_nft_market()
-    for nft_id, nft_data in NFT_COLLECTIONS.items():
-        sold_count = sum(1 for n in all_nfts if n['collection_id'] == nft_id)
-        available = nft_data['total'] - sold_count
-        if available > 0:
-            keyboard.append([InlineKeyboardButton(
-                f"{nft_data['emoji']} {nft_data['name']} - {nft_data['price']}💰 ({available} шт.)",
-                callback_data=f"buy_nft_{nft_id}"
-            )])
-    
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_nft")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    nfts = user_data.get('nft_inventory', [])
-    
-    await query.edit_message_text(
-        f"🛒 <b>NFT Маркет</b>\n\n"
-        f"💰 Баланс: {format_num(user_data['balance'])}\n"
-        f"📦 NFT в инвентаре: {len(nfts)}\n\n"
-        f"<b>Доступные NFT:</b>\n"
-        f"🐉 Дракон — Легендарный (+30% к силе) — 15000💰\n"
-        f"💎 Кристалл — Редкий (+15% к силе) — 8000💰\n"
-        f"👑 Корона — Мифический (+50% к силе) — 25000💰\n\n"
-        f"<i>Выбери действие:</i>",
-        reply_markup=reply_markup,
-        parse_mode="HTML"
-    )
-
-async def back_nft(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user_id = query.from_user.id
-    keyboard = get_admin_keyboard() if is_admin(user_id) else get_main_keyboard()
-    await query.edit_message_text("🍐 <b>Pear Clicker</b>\n\nГлавное меню", reply_markup=keyboard, parse_mode="HTML")
-
-async def go_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user_id = query.from_user.id
-    user_data = db.get_user(user_id)
-    
-    keyboard = [
-        [InlineKeyboardButton("📝 Заявка на кредит", callback_data="credit_apply")],
-        [InlineKeyboardButton("📊 Мои кредиты", callback_data="credit_info")],
-        [InlineKeyboardButton("💳 Взять кредит", callback_data="credit_take")],
-        [InlineKeyboardButton("💸 Перевод", callback_data="transfer")],
-        [InlineKeyboardButton("🔙 Назад", callback_data="back_bank")],
-    ]
-    
-    if is_admin(user_id):
-        keyboard.insert(1, [InlineKeyboardButton("✅ Одобрить заявки", callback_data="admin_credits")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    available_credit = user_data.get('credit_limit', 0) - user_data.get('credit_used', 0)
-    pending = user_data.get('credit_pending', 0)
-    
-    await query.edit_message_text(
-        f"🏦 <b>Банк | Переводы</b>\n\n"
-        f"💰 Баланс: {format_num(user_data['balance'])}\n"
-        f"📊 Кредитный лимит: {format_num(user_data.get('credit_limit', 0))}\n"
-        f"💳 Использовано: {format_num(user_data.get('credit_used', 0))}\n"
-        f"💎 Доступно: {format_num(max(0, available_credit))}\n"
-        f"⏳ Заявка: {format_num(pending) if pending > 0 else 'Нет'}\n"
-        f"📈 Всего взято: {format_num(user_data.get('total_credit_taken', 0))}\n\n"
-        f"<i>Максимальный кредит: 20,000 монет</i>\n"
-        f"<i>Для перевода напиши: @username сумма</i>",
-        reply_markup=reply_markup,
-        parse_mode="HTML"
-    )
-
-async def back_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user_id = query.from_user.id
-    keyboard = get_admin_keyboard() if is_admin(user_id) else get_main_keyboard()
-    await query.edit_message_text("🍐 <b>Pear Clicker</b>\n\nГлавное меню", reply_markup=keyboard, parse_mode="HTML")
-
 # ============================================
 # АДМИН-ПАНЕЛЬ
 # ============================================
@@ -1821,7 +1338,7 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ============================================
-# АДМИН-КОМАНДЫ
+# АДМИН-КОМАНДЫ (СОКРАЩЕНЫ)
 # ============================================
 
 async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2252,10 +1769,784 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ============================================
+# ОСТАЛЬНЫЕ КОЛБЭКИ ДЛЯ NFT И БАНКА
+# ============================================
+
+async def buy_nft(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    collection_id = query.data.replace("buy_nft_", "")
+    
+    user_data = db.get_user(user_id)
+    nft_data = NFT_COLLECTIONS.get(collection_id)
+    
+    if not nft_data:
+        await query.edit_message_text("❌ NFT не найдено!")
+        return
+    
+    all_nfts = db.get_nft_market()
+    sold_count = sum(1 for n in all_nfts if n['collection_id'] == collection_id)
+    available = nft_data['total'] - sold_count
+    
+    if available <= 0:
+        await query.edit_message_text(f"❌ {nft_data['emoji']} {nft_data['name']} закончились!")
+        return
+    
+    if user_data['balance'] < nft_data['price']:
+        await query.edit_message_text(
+            f"❌ Не хватает монет!\nНужно: {nft_data['price']}💰\nУ тебя: {format_num(user_data['balance'])}💰",
+            parse_mode="HTML"
+        )
+        return
+    
+    user_data['balance'] -= nft_data['price']
+    user_data['nft_inventory'].append(collection_id)
+    
+    nft_item = {
+        'id': generate_nft_id(),
+        'collection_id': collection_id,
+        'name': nft_data['name'],
+        'emoji': nft_data['emoji'],
+        'rarity': nft_data['rarity'],
+        'owner_id': str(user_id),
+        'price': None,
+        'for_sale': False,
+        'purchase_date': datetime.now().isoformat(),
+    }
+    
+    db.add_nft_to_market(nft_item)
+    db.update_user(user_id, user_data)
+    
+    keyboard = [[InlineKeyboardButton("🛒 В маркет", callback_data="go_nft_market")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        f"✅ <b>Покупка успешна!</b>\n\n"
+        f"{nft_data['emoji']} <b>{nft_data['name']}</b>\n"
+        f"Редкость: {nft_data['rarity']}\n"
+        f"Цена: {nft_data['price']}💰\n"
+        f"Остаток: {format_num(user_data['balance'])}💰\n\n"
+        f"<i>Теперь этот NFT в твоём инвентаре!</i>",
+        reply_markup=reply_markup,
+        parse_mode="HTML"
+    )
+
+async def show_my_nfts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    user_data = db.get_user(user_id)
+    
+    nfts = [item for item in db.get_nft_market() if item['owner_id'] == str(user_id)]
+    
+    if not nfts:
+        await query.edit_message_text("📦 <b>У тебя пока нет NFT</b>\n\nКупи их в маркете! 🛒", parse_mode="HTML")
+        return
+    
+    text = "📦 <b>Твои NFT</b>\n\n"
+    for nft in nfts:
+        collection = NFT_COLLECTIONS.get(nft['collection_id'], {})
+        status = "🟢 На продаже" if nft.get('for_sale') else "🔒 В инвентаре"
+        text += f"{collection.get('emoji', '🎨')} <b>{nft['name']}</b>\n"
+        text += f"   ID: {nft['id'][:8]}...\n"
+        text += f"   Статус: {status}\n"
+        if nft.get('for_sale') and nft.get('price'):
+            text += f"   Цена: {nft['price']}💰\n"
+        text += "\n"
+    
+    keyboard = [[InlineKeyboardButton("🔙 В маркет", callback_data="go_nft_market")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
+
+async def sell_nft_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    user_data = db.get_user(user_id)
+    
+    nfts = [item for item in db.get_nft_market() if item['owner_id'] == str(user_id) and not item.get('for_sale', False)]
+    
+    if not nfts:
+        await query.edit_message_text(
+            "❌ У тебя нет NFT для продажи.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В маркет", callback_data="go_nft_market")]])
+        )
+        return
+    
+    keyboard = []
+    for nft in nfts:
+        collection = NFT_COLLECTIONS.get(nft['collection_id'], {})
+        keyboard.append([InlineKeyboardButton(
+            f"{collection.get('emoji', '🎨')} {nft['name']} (ID: {nft['id'][:8]}...)",
+            callback_data=f"set_sell_{nft['id']}"
+        )])
+    
+    keyboard.append([InlineKeyboardButton("🔙 В маркет", callback_data="go_nft_market")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        "💰 <b>Продажа NFT</b>\n\nВыбери NFT, который хочешь продать.\nПосле выбора укажи цену в монетах.",
+        reply_markup=reply_markup,
+        parse_mode="HTML"
+    )
+
+async def set_sell_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    nft_id = query.data.replace("set_sell_", "")
+    context.user_data['selling_nft'] = nft_id
+    
+    await query.edit_message_text(
+        f"💰 <b>Укажи цену для NFT</b>\n\n"
+        f"Напиши цену в монетах (минимальная 500):\n"
+        f"<i>Например: 5000</i>\n\n"
+        f"🔙 Для отмены напиши 'отмена'",
+        parse_mode="HTML"
+    )
+
+async def handle_sell_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text
+    
+    if text.lower() == "отмена":
+        context.user_data.pop('selling_nft', None)
+        keyboard = get_admin_keyboard() if is_admin(user_id) else get_main_keyboard()
+        await update.message.reply_text("❌ Отменено!", reply_markup=keyboard)
+        return
+    
+    if not text.isdigit():
+        await update.message.reply_text("❌ Введи число или напиши 'отмена'!")
+        return
+    
+    price = int(text)
+    if price < 500:
+        await update.message.reply_text("❌ Минимальная цена — 500 монет!")
+        return
+    
+    nft_id = context.user_data.get('selling_nft')
+    if not nft_id:
+        await update.message.reply_text("❌ Ошибка! Попробуй снова через маркет.")
+        return
+    
+    nft = db.get_nft_by_id(nft_id)
+    if not nft or nft['owner_id'] != str(user_id):
+        await update.message.reply_text("❌ NFT не найден или не твой!")
+        return
+    
+    nft['for_sale'] = True
+    nft['price'] = price
+    db.save()
+    
+    keyboard = [[InlineKeyboardButton("🛒 В маркет", callback_data="go_nft_market")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        f"✅ <b>NFT выставлен на продажу!</b>\n\nЦена: {price}💰\nЖди покупателя! 🛒",
+        reply_markup=reply_markup,
+        parse_mode="HTML"
+    )
+    
+    context.user_data.pop('selling_nft', None)
+
+async def player_market(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    all_nfts = db.get_nft_market()
+    for_sale = [n for n in all_nfts if n.get('for_sale', False)]
+    
+    if not for_sale:
+        await query.edit_message_text(
+            "🏪 <b>Рынок игроков пуст</b>\n\nНикто не выставил NFT на продажу.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 В маркет", callback_data="go_nft_market")]]),
+            parse_mode="HTML"
+        )
+        return
+    
+    keyboard = []
+    for nft in for_sale:
+        collection = NFT_COLLECTIONS.get(nft['collection_id'], {})
+        seller_name = "Игрок"
+        try:
+            seller = await context.bot.get_chat(int(nft['owner_id']))
+            seller_name = seller.username or seller.first_name or str(nft['owner_id'])[:8]
+        except:
+            pass
+        
+        keyboard.append([InlineKeyboardButton(
+            f"{collection.get('emoji', '🎨')} {nft['name']} - {nft['price']}💰 (от @{seller_name})",
+            callback_data=f"player_buy_{nft['id']}"
+        )])
+    
+    keyboard.append([InlineKeyboardButton("🔙 В маркет", callback_data="go_nft_market")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        "🏪 <b>Рынок игроков</b>\n\nЗдесь NFT, выставленные другими игроками на продажу.\nНажми на NFT чтобы купить!",
+        reply_markup=reply_markup,
+        parse_mode="HTML"
+    )
+
+async def player_buy_nft(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    nft_id = query.data.replace("player_buy_", "")
+    
+    nft = db.get_nft_by_id(nft_id)
+    if not nft or not nft.get('for_sale', False):
+        await query.edit_message_text("❌ Этот NFT уже продан или недоступен!")
+        return
+    
+    if nft['owner_id'] == str(user_id):
+        await query.edit_message_text("❌ Ты не можешь купить свой NFT!")
+        return
+    
+    user_data = db.get_user(user_id)
+    seller_data = db.get_user(nft['owner_id'])
+    
+    price = nft['price']
+    
+    if user_data['balance'] < price:
+        await query.edit_message_text(
+            f"❌ Не хватает монет!\nНужно: {price}💰\nУ тебя: {format_num(user_data['balance'])}💰"
+        )
+        return
+    
+    user_data['balance'] -= price
+    seller_data['balance'] = seller_data.get('balance', 0) + price
+    
+    old_owner = nft['owner_id']
+    nft['owner_id'] = str(user_id)
+    nft['for_sale'] = False
+    nft['price'] = None
+    
+    user_data['nft_inventory'].append(nft['id'])
+    if nft['id'] in seller_data.get('nft_inventory', []):
+        seller_data['nft_inventory'].remove(nft['id'])
+    
+    db.update_user(user_id, user_data)
+    db.update_user(old_owner, seller_data)
+    db.save()
+    
+    try:
+        await context.bot.send_message(
+            chat_id=int(old_owner),
+            text=f"🎉 <b>Твой NFT продан!</b>\n\n"
+                 f"{nft.get('emoji', '🎨')} {nft['name']}\n"
+                 f"Цена: {price}💰\n"
+                 f"Покупатель: @{update.effective_user.username or 'Игрок'}\n"
+                 f"Твой баланс: {format_num(seller_data['balance'])}💰",
+            parse_mode="HTML"
+        )
+    except:
+        pass
+    
+    keyboard = [[InlineKeyboardButton("🛒 В маркет", callback_data="go_nft_market")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        f"✅ <b>Покупка успешна!</b>\n\n"
+        f"Ты купил {nft.get('emoji', '🎨')} {nft['name']}\n"
+        f"Цена: {price}💰\n"
+        f"Твой баланс: {format_num(user_data['balance'])}💰\n\n"
+        f"<i>NFT добавлен в инвентарь!</i>",
+        reply_markup=reply_markup,
+        parse_mode="HTML"
+    )
+
+async def go_nft_market(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    user_data = db.get_user(user_id)
+    
+    keyboard = [
+        [InlineKeyboardButton("📦 Мои NFT", callback_data="my_nfts")],
+        [InlineKeyboardButton("💰 Продать NFT", callback_data="sell_nft")],
+        [InlineKeyboardButton("🏪 Рынок игроков", callback_data="player_market")],
+    ]
+    
+    all_nfts = db.get_nft_market()
+    for nft_id, nft_data in NFT_COLLECTIONS.items():
+        sold_count = sum(1 for n in all_nfts if n['collection_id'] == nft_id)
+        available = nft_data['total'] - sold_count
+        if available > 0:
+            keyboard.append([InlineKeyboardButton(
+                f"{nft_data['emoji']} {nft_data['name']} - {nft_data['price']}💰 ({available} шт.)",
+                callback_data=f"buy_nft_{nft_id}"
+            )])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_nft")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    nfts = user_data.get('nft_inventory', [])
+    
+    await query.edit_message_text(
+        f"🛒 <b>NFT Маркет</b>\n\n"
+        f"💰 Баланс: {format_num(user_data['balance'])}\n"
+        f"📦 NFT в инвентаре: {len(nfts)}\n\n"
+        f"<b>Доступные NFT:</b>\n"
+        f"🐉 Дракон — Легендарный (+30% к силе) — 15000💰\n"
+        f"💎 Кристалл — Редкий (+15% к силе) — 8000💰\n"
+        f"👑 Корона — Мифический (+50% к силе) — 25000💰\n\n"
+        f"<i>Выбери действие:</i>",
+        reply_markup=reply_markup,
+        parse_mode="HTML"
+    )
+
+async def back_nft(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    keyboard = get_admin_keyboard() if is_admin(user_id) else get_main_keyboard()
+    await query.edit_message_text("🍐 <b>Pear Clicker</b>\n\nГлавное меню", reply_markup=keyboard, parse_mode="HTML")
+
+async def go_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    user_data = db.get_user(user_id)
+    
+    keyboard = [
+        [InlineKeyboardButton("📝 Заявка на кредит", callback_data="credit_apply")],
+        [InlineKeyboardButton("📊 Мои кредиты", callback_data="credit_info")],
+        [InlineKeyboardButton("💳 Взять кредит", callback_data="credit_take")],
+        [InlineKeyboardButton("💸 Перевод", callback_data="transfer")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="back_bank")],
+    ]
+    
+    if is_admin(user_id):
+        keyboard.insert(1, [InlineKeyboardButton("✅ Одобрить заявки", callback_data="admin_credits")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    available_credit = user_data.get('credit_limit', 0) - user_data.get('credit_used', 0)
+    pending = user_data.get('credit_pending', 0)
+    
+    await query.edit_message_text(
+        f"🏦 <b>Банк | Переводы</b>\n\n"
+        f"💰 Баланс: {format_num(user_data['balance'])}\n"
+        f"📊 Кредитный лимит: {format_num(user_data.get('credit_limit', 0))}\n"
+        f"💳 Использовано: {format_num(user_data.get('credit_used', 0))}\n"
+        f"💎 Доступно: {format_num(max(0, available_credit))}\n"
+        f"⏳ Заявка: {format_num(pending) if pending > 0 else 'Нет'}\n"
+        f"📈 Всего взято: {format_num(user_data.get('total_credit_taken', 0))}\n\n"
+        f"<i>Максимальный кредит: 20,000 монет</i>\n"
+        f"<i>Для перевода напиши: @username сумма</i>",
+        reply_markup=reply_markup,
+        parse_mode="HTML"
+    )
+
+async def back_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    keyboard = get_admin_keyboard() if is_admin(user_id) else get_main_keyboard()
+    await query.edit_message_text("🍐 <b>Pear Clicker</b>\n\nГлавное меню", reply_markup=keyboard, parse_mode="HTML")
+
+async def credit_apply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    await query.edit_message_text(
+        f"📝 <b>Заявка на кредит</b>\n\n"
+        f"Напиши сумму кредита (от 100 до 20,000 монет):\n"
+        f"<i>Например: 5000</i>\n\n"
+        f"⏳ Заявку рассмотрит администратор.\n"
+        f"🔙 Для отмены напиши 'отмена'",
+        parse_mode="HTML"
+    )
+    context.user_data['awaiting_credit'] = True
+
+async def handle_credit_apply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text
+    
+    if text.lower() == "отмена":
+        context.user_data.pop('awaiting_credit', None)
+        keyboard = get_admin_keyboard() if is_admin(user_id) else get_main_keyboard()
+        await update.message.reply_text("❌ Заявка отменена!", reply_markup=keyboard)
+        return
+    
+    if not text.isdigit():
+        await update.message.reply_text("❌ Введи число или напиши 'отмена'!")
+        return
+    
+    amount = int(text)
+    if amount < 100:
+        await update.message.reply_text("❌ Минимальная сумма — 100 монет!")
+        return
+    if amount > 20000:
+        await update.message.reply_text("❌ Максимальная сумма — 20,000 монет!")
+        return
+    
+    user_data = db.get_user(user_id)
+    
+    if user_data.get('credit_pending', 0) > 0:
+        await update.message.reply_text("❌ У тебя уже есть заявка на рассмотрении!")
+        return
+    
+    user_data['credit_pending'] = amount
+    db.update_user(user_id, user_data)
+    
+    for admin_id in ADMINS:
+        try:
+            await context.bot.send_message(
+                chat_id=int(admin_id),
+                text=f"📝 <b>Новая заявка на кредит!</b>\n\n"
+                     f"👤 Пользователь: @{update.effective_user.username or 'Без username'}\n"
+                     f"🆔 ID: {user_id}\n"
+                     f"💰 Сумма: {amount} монет\n\n"
+                     f"Используй /approve {user_id} {amount} для одобрения\n"
+                     f"Используй /decline {user_id} для отказа",
+                parse_mode="HTML"
+            )
+        except:
+            pass
+    
+    await update.message.reply_text(
+        f"✅ <b>Заявка отправлена!</b>\n\n"
+        f"Сумма: {amount}💰\n"
+        f"Статус: ⏳ Ожидает одобрения\n\n"
+        f"<i>Администратор рассмотрит заявку в ближайшее время.</i>",
+        reply_markup=get_admin_keyboard() if is_admin(user_id) else get_main_keyboard(),
+        parse_mode="HTML"
+    )
+    context.user_data['awaiting_credit'] = False
+
+async def credit_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    user_data = db.get_user(user_id)
+    
+    history = user_data.get('credit_history', [])
+    
+    text = (
+        f"📊 <b>Информация о кредитах</b>\n\n"
+        f"💰 Кредитный лимит: {format_num(user_data.get('credit_limit', 0))}\n"
+        f"💳 Использовано: {format_num(user_data.get('credit_used', 0))}\n"
+        f"💎 Доступно: {format_num(max(0, user_data.get('credit_limit', 0) - user_data.get('credit_used', 0)))}\n"
+        f"📈 Всего взято: {format_num(user_data.get('total_credit_taken', 0))}\n"
+        f"⏳ Заявка: {'Есть' if user_data.get('credit_pending', 0) > 0 else 'Нет'}\n\n"
+    )
+    
+    if history:
+        text += "<b>История операций:</b>\n"
+        for item in history[-5:]:
+            text += f"• {item}\n"
+    else:
+        text += "<i>История пуста</i>"
+    
+    keyboard = [[InlineKeyboardButton("🔙 В банк", callback_data="go_bank")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
+
+async def credit_take(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    user_data = db.get_user(user_id)
+    
+    available = user_data.get('credit_limit', 0) - user_data.get('credit_used', 0)
+    
+    if available <= 0:
+        await query.edit_message_text("❌ <b>Нет доступного кредита!</b>\n\nТвой кредитный лимит исчерпан.", parse_mode="HTML")
+        return
+    
+    await query.edit_message_text(
+        f"💳 <b>Взять кредит</b>\n\n"
+        f"Доступно: {format_num(available)} монет\n"
+        f"Напиши сумму для получения:\n"
+        f"<i>Например: {min(1000, available)}</i>\n\n"
+        f"🔙 Для отмены напиши 'отмена'",
+        parse_mode="HTML"
+    )
+    context.user_data['awaiting_credit_take'] = True
+
+async def handle_credit_take(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text
+    
+    if text.lower() == "отмена":
+        context.user_data.pop('awaiting_credit_take', None)
+        keyboard = get_admin_keyboard() if is_admin(user_id) else get_main_keyboard()
+        await update.message.reply_text("❌ Отменено!", reply_markup=keyboard)
+        return
+    
+    if not text.isdigit():
+        await update.message.reply_text("❌ Введи число или напиши 'отмена'!")
+        return
+    
+    amount = int(text)
+    user_data = db.get_user(user_id)
+    
+    available = user_data.get('credit_limit', 0) - user_data.get('credit_used', 0)
+    
+    if amount < 100:
+        await update.message.reply_text("❌ Минимальная сумма — 100 монет!")
+        return
+    if amount > available:
+        await update.message.reply_text(f"❌ Доступно только {format_num(available)} монет!")
+        return
+    
+    user_data['balance'] = user_data.get('balance', 0) + amount
+    user_data['credit_used'] = user_data.get('credit_used', 0) + amount
+    user_data['total_credit_taken'] = user_data.get('total_credit_taken', 0) + amount
+    
+    if 'credit_history' not in user_data:
+        user_data['credit_history'] = []
+    user_data['credit_history'].append(f"✅ Взято {amount} монет ({datetime.now().strftime('%d.%m.%Y %H:%M')})")
+    
+    db.update_user(user_id, user_data)
+    
+    await update.message.reply_text(
+        f"✅ <b>Кредит получен!</b>\n\n"
+        f"💰 +{format_num(amount)} монет\n"
+        f"💳 Новый баланс: {format_num(user_data['balance'])}\n"
+        f"💎 Остаток кредита: {format_num(available - amount)}\n\n"
+        f"<i>Не забудь вернуть кредит!</i>",
+        reply_markup=get_admin_keyboard() if is_admin(user_id) else get_main_keyboard(),
+        parse_mode="HTML"
+    )
+    context.user_data['awaiting_credit_take'] = False
+
+async def show_admin_credits(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    if not is_admin(user_id):
+        await query.edit_message_text("🚫 Доступ запрещён!")
+        return
+    
+    users = db.get_all_users()
+    pending_users = [(uid, data) for uid, data in users.items() if data.get('credit_pending', 0) > 0]
+    
+    if not pending_users:
+        await query.edit_message_text("✅ <b>Нет заявок на рассмотрение</b>", parse_mode="HTML")
+        return
+    
+    text = "📝 <b>Заявки на кредит</b>\n\n"
+    keyboard = []
+    
+    for uid, data in pending_users:
+        amount = data.get('credit_pending', 0)
+        try:
+            user = await context.bot.get_chat(int(uid))
+            name = user.username or user.first_name or uid
+        except:
+            name = uid[:8]
+        
+        text += f"👤 @{name}\n"
+        text += f"💰 Сумма: {amount} монет\n"
+        text += f"🆔 ID: {uid}\n\n"
+        
+        keyboard.append([
+            InlineKeyboardButton(f"✅ Одобрить @{name}", callback_data=f"approve_credit_{uid}_{amount}"),
+            InlineKeyboardButton(f"❌ Отказать @{name}", callback_data=f"decline_credit_{uid}")
+        ])
+    
+    keyboard.append([InlineKeyboardButton("🔙 В банк", callback_data="go_bank")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
+
+async def handle_credit_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    if not is_admin(user_id):
+        await query.edit_message_text("🚫 Доступ запрещён!")
+        return
+    
+    data = query.data
+    
+    if data.startswith("approve_credit_"):
+        parts = data.replace("approve_credit_", "").split("_")
+        target_id = parts[0]
+        amount = int(parts[1])
+        
+        if amount > 20000:
+            await query.edit_message_text("❌ Максимум 20,000 монет!")
+            return
+        
+        target_data = db.get_user(target_id)
+        target_data['credit_limit'] = target_data.get('credit_limit', 0) + amount
+        target_data['credit_pending'] = 0
+        db.update_user(target_id, target_data)
+        
+        await query.edit_message_text(
+            f"✅ <b>Кредит одобрен!</b>\n\n"
+            f"👤 Пользователь ID: {target_id}\n"
+            f"💰 Сумма: {amount} монет\n"
+            f"📊 Новый кредитный лимит: {format_num(target_data['credit_limit'])}\n\n"
+            f"<i>Пользователь может взять кредит через кнопку 'Взять кредит'</i>",
+            parse_mode="HTML"
+        )
+        
+        try:
+            await context.bot.send_message(
+                chat_id=int(target_id),
+                text=f"✅ <b>Кредит одобрен!</b>\n\n"
+                     f"💰 Сумма: {amount} монет\n"
+                     f"📊 Твой кредитный лимит: {format_num(target_data['credit_limit'])}\n\n"
+                     f"<i>Теперь ты можешь взять кредит через банк.</i>",
+                parse_mode="HTML"
+            )
+        except:
+            pass
+        
+        return
+    
+    elif data.startswith("decline_credit_"):
+        target_id = data.replace("decline_credit_", "")
+        target_data = db.get_user(target_id)
+        target_data['credit_pending'] = 0
+        db.update_user(target_id, target_data)
+        
+        await query.edit_message_text(
+            f"❌ <b>Кредит отклонён</b>\n\n"
+            f"👤 Пользователь ID: {target_id}\n"
+            f"<i>Пользователь уведомлён</i>",
+            parse_mode="HTML"
+        )
+        
+        try:
+            await context.bot.send_message(
+                chat_id=int(target_id),
+                text="❌ <b>Кредит отклонён</b>\n\nАдминистратор отклонил вашу заявку.",
+                parse_mode="HTML"
+            )
+        except:
+            pass
+        
+        return
+
+async def transfer_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    user_data = db.get_user(user_id)
+    
+    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_transfer")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        f"💸 <b>Перевод монет</b>\n\n"
+        f"💰 Твой баланс: {format_num(user_data['balance'])}\n\n"
+        f"<i>Напиши перевод в формате:</i>\n"
+        f"<code>@username сумма</code>\n\n"
+        f"<b>Пример:</b>\n"
+        f"<code>@john 500</code>\n\n"
+        f"📌 Минимальная сумма: 10 монет\n"
+        f"🔙 Нажми кнопку 'Назад' для отмены",
+        reply_markup=reply_markup,
+        parse_mode="HTML"
+    )
+    context.user_data['awaiting_transfer'] = True
+
+async def handle_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text
+    user_data = db.get_user(user_id)
+    
+    if text.lower() == "отмена" or text == "🔙 Назад":
+        context.user_data.pop('awaiting_transfer', None)
+        keyboard = get_admin_keyboard() if is_admin(user_id) else get_main_keyboard()
+        await update.message.reply_text("❌ Перевод отменён!", reply_markup=keyboard)
+        return
+    
+    parts = text.split()
+    if len(parts) < 2:
+        await update.message.reply_text("❌ Неверный формат!\nИспользуй: @username сумма\nИли напиши 'отмена' для выхода")
+        return
+    
+    target_username = parts[0].replace('@', '')
+    try:
+        amount = int(parts[1])
+    except:
+        await update.message.reply_text("❌ Сумма должна быть числом!")
+        return
+    
+    if amount < 10:
+        await update.message.reply_text("❌ Минимальная сумма — 10 монет!")
+        return
+    
+    if user_data['balance'] < amount:
+        await update.message.reply_text(
+            f"❌ Не хватает монет!\nНужно: {amount}💰\nУ тебя: {format_num(user_data['balance'])}💰"
+        )
+        return
+    
+    target_user_id = None
+    for uid, data in db.get_all_users().items():
+        try:
+            user = await context.bot.get_chat(int(uid))
+            if user.username == target_username:
+                target_user_id = uid
+                break
+        except:
+            continue
+    
+    if not target_user_id:
+        await update.message.reply_text(f"❌ Пользователь @{target_username} не найден!")
+        return
+    
+    if str(target_user_id) == str(user_id):
+        await update.message.reply_text("❌ Нельзя перевести самому себе!")
+        return
+    
+    target_data = db.get_user(target_user_id)
+    
+    user_data['balance'] -= amount
+    target_data['balance'] = target_data.get('balance', 0) + amount
+    
+    db.update_user(user_id, user_data)
+    db.update_user(target_user_id, target_data)
+    
+    await update.message.reply_text(
+        f"✅ <b>Перевод выполнен!</b>\n\n"
+        f"💸 Отправлено: {amount}💰\n"
+        f"👤 Получатель: @{target_username}\n"
+        f"💰 Твой баланс: {format_num(user_data['balance'])}\n\n"
+        f"<i>Комиссия: 0%</i>",
+        reply_markup=get_admin_keyboard() if is_admin(user_id) else get_main_keyboard(),
+        parse_mode="HTML"
+    )
+    
+    try:
+        await context.bot.send_message(
+            chat_id=int(target_user_id),
+            text=f"💸 <b>Получен перевод!</b>\n\n"
+                 f"💰 +{amount} монет\n"
+                 f"👤 Отправитель: @{update.effective_user.username or 'Игрок'}\n"
+                 f"💰 Новый баланс: {format_num(target_data['balance'])}",
+            parse_mode="HTML"
+        )
+    except:
+        pass
+    
+    context.user_data.pop('awaiting_transfer', None)
+
+# ============================================
 # ЗАПУСК
 # ============================================
 
 def main():
+    # Запускаем Flask в отдельном потоке
+    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    print(f"✅ Flask сервер запущен на порту {PORT}")
+    
     application = Application.builder().token(BOT_TOKEN).build()
     
     # Основные команды
@@ -2281,13 +2572,14 @@ def main():
     application.add_handler(CommandHandler("broadcast", broadcast))
     
     # Callback обработчики
-    application.add_handler(CallbackQueryHandler(callback_handler, pattern="^(buy_multi|buy_auto|buy_bonus|back_shop|buy_nft_|my_nfts|sell_nft|player_market|go_nft_market|back_nft|set_sell_|player_buy_|credit_|admin_credits|go_bank|back_bank|back_transfer|transfer|approve_credit_|decline_credit_)"))
+    application.add_handler(CallbackQueryHandler(callback_handler, pattern="^(buy_multi|buy_auto|buy_bonus|back_shop|dice_|dice_again|buy_nft_|my_nfts|sell_nft|player_market|go_nft_market|back_nft|set_sell_|player_buy_|credit_|admin_credits|go_bank|back_bank|back_transfer|transfer|approve_credit_|decline_credit_)"))
     
     # Обработка сообщений
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("🍐 Pear Clicker Бот запущен!")
     print(f"👑 Админы: {ADMINS}")
+    print("🎲 Игра в кости: ставка от 1,000 до 10,000,000")
     print("💰 Магазин с инлайн-кнопками!")
     print("📊 Данные хранятся в JSON")
     
