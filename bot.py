@@ -496,8 +496,14 @@ async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================
 
 async def show_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Магазин с инлайн-кнопками"""
     user_id = update.effective_user.id
     user_data = db.get_user(user_id)
+    
+    if not user_data:
+        await update.message.reply_text("❌ Ошибка!")
+        return
+    
     boosts = user_data.get('boosts', {})
     
     multi_level = boosts.get('multi_click', 0)
@@ -508,27 +514,24 @@ async def show_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     auto_price = 200 * (2 ** auto_level)
     bonus_price = 150 * (2 ** bonus_level)
     
+    # СОЗДАЁМ ИНЛАЙН-КЛАВИАТУРУ
     keyboard = [
-        [
-            InlineKeyboardButton(
-                f"🔹 Мультиклик x{1.5 ** multi_level:.1f} — {multi_price}💰",
-                callback_data="buy_multi"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                f"⚡ Автокликер +{0.5 * auto_level:.1f}/сек — {auto_price}💰",
-                callback_data="buy_auto"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                f"💎 Бонус клика +{bonus_level * 5}% — {bonus_price}💰",
-                callback_data="buy_bonus"
-            )
-        ],
+        [InlineKeyboardButton(
+            f"🔹 Мультиклик x{1.5 ** multi_level:.1f} — {multi_price}💰",
+            callback_data="buy_multi"
+        )],
+        [InlineKeyboardButton(
+            f"⚡ Автокликер +{0.5 * auto_level:.1f}/сек — {auto_price}💰",
+            callback_data="buy_auto"
+        )],
+        [InlineKeyboardButton(
+            f"💎 Бонус клика +{bonus_level * 5}% — {bonus_price}💰",
+            callback_data="buy_bonus"
+        )],
         [InlineKeyboardButton("🔙 Назад", callback_data="back_shop")],
     ]
+    
+    # ВАЖНО: используем InlineKeyboardMarkup
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     msg = (
@@ -549,7 +552,11 @@ async def show_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"<i>Нажми на кнопку для покупки!</i>"
     )
     
-    await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode="HTML")
+    await update.message.reply_text(
+        text=msg,
+        reply_markup=reply_markup,
+        parse_mode="HTML"
+    )
 
 async def shop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
